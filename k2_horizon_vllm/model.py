@@ -37,6 +37,7 @@ from vllm.model_executor.models.utils import (
     make_layers,
     maybe_prefix,
 )
+from vllm.model_executor.models.interfaces import SupportsEagle3, EagleModelMixin
 from vllm import _custom_ops as ops
 from vllm.model_executor.layers.fused_moe.moe_align_block_size import moe_align_block_size
 from vllm.model_executor.layers.quantization.utils.marlin_utils import (
@@ -268,6 +269,9 @@ class K2HorizonMoVAAttention(K2HorizonAttentionBase):
         self._vws = marlin_make_workspace_new(dev, 4)
         self._vg = marlin_make_empty_g_idx(dev)
         self._vsort = marlin_make_empty_g_idx(dev)
+        # free the now-redundant fused Marlin weights (we only use the reshaped MoE copies)
+        self.v_experts_fused.qweight.data = torch.empty(0, dtype=qw.dtype, device=dev)
+        self.v_experts_fused.scales.data = torch.empty(0, dtype=sc.dtype, device=dev)
 
     def forward(self, positions, hidden_states):
         q, _ = self.q_proj(hidden_states)
@@ -309,7 +313,7 @@ class K2HorizonDecoderLayer(nn.Module):
         return hidden_states
 
 
-class K2HorizonModel(nn.Module):
+class K2HorizonModel(nn.Module, EagleModelMixin):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
         config = vllm_config.model_config.hf_config
@@ -333,17 +337,27 @@ class K2HorizonModel(nn.Module):
             hidden_states = inputs_embeds
         else:
             hidden_states = self.embed_tokens(input_ids)
-        for layer in self.layers[self.start_layer:self.end_layer]:
+        # EAGLE-3: collect auxiliary hidden states at the configured layers.
+        aux_hidden_states = self._maybe_add_hidden_state([], 0, hidden_states, None)
+        for idx, layer in enumerate(self.layers[self.start_layer:self.end_layer]):
             hidden_states = layer(positions, hidden_states)
+            self._maybe_add_hidden_state(aux_hidden_states, idx + 1, hidden_states, None)
         hidden_states = self.norm(hidden_states)
+        if len(aux_hidden_states) > 0:
+            return hidden_states, aux_hidden_states
         return hidden_states
 
 
-class K2HorizonForCausalLM(nn.Module):
+class K2HorizonForCausalLM(nn.Module, SupportsEagle3):
+    supports_eagle3 = True
     packed_modules_mapping = {
         "gate_up_proj": ["gate_proj", "up_proj"],
         "v_experts_fused": [f"v_experts.{i}" for i in range(64)],
     }
+
+    def get_eagle3_default_aux_hidden_state_layers(self) -> tuple:
+        n = self.config.num_hidden_layers
+        return (2, n // 2, n - 3)  # low / mid / high, EAGLE-3 convention
 
     hf_to_vllm_mapper = WeightsMapper(
         orig_to_new_substr={".mlp.gate.bias": ".mlp.gate.e_score_correction_bias"},

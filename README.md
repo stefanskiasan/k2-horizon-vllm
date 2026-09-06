@@ -57,6 +57,10 @@ For maximum single-stream throughput at the cost of context, use `VLLM_ATTENTION
 
 Speculative decoding with a dense K2-Horizon sibling (3.7B, same vocabulary) as the draft pushes single-stream higher.
 
+## EAGLE-3 support
+
+The model implements vLLM's `SupportsEagle3` interface (auxiliary hidden states at low/mid/high layers), so an EAGLE-3 draft head can be trained against it (e.g. with [vLLM Speculators](https://docs.vllm.ai/projects/speculators/)) and served via `--speculative-config '{"method":"eagle3",...}'`. This is the practical route to speculative decoding here — the dense K2-Horizon siblings share the 250624 vocab but are too large to be efficient drafts, and there is no shipped MTP head.
+
 ## License & credit
 
 Apache-2.0. Base model and architecture: **[IFM/K2-Horizon-MoVA-36B-A4B](https://huggingface.co/IFM/K2-Horizon-MoVA-36B-A4B)** by MBZUAI's Institute of Foundation Models. GPTQ Int4 weights: [Siladrim/K2-Horizon-MoVA-36B-A4B-GPTQ-Int4](https://huggingface.co/Siladrim/K2-Horizon-MoVA-36B-A4B-GPTQ-Int4).
