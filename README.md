@@ -57,9 +57,22 @@ For maximum single-stream throughput at the cost of context, use `VLLM_ATTENTION
 
 (Note: a dense K2-Horizon sibling as a draft-model is measured to be *too large* to help — its forward cost is comparable to the 4B-active target. EAGLE-3, below, is the practical route to faster single-stream.)
 
-## EAGLE-3 support
+## EAGLE-3 speculative decoding (working, lossless)
 
-The model implements vLLM's `SupportsEagle3` interface (auxiliary hidden states at low/mid/high layers), so an EAGLE-3 draft head can be trained against it (e.g. with [vLLM Speculators](https://docs.vllm.ai/projects/speculators/)) and served via `--speculative-config '{"method":"eagle3",...}'`. This is the practical route to speculative decoding here — the dense K2-Horizon siblings share the 250624 vocab but are too large to be efficient drafts, and there is no shipped MTP head.
+The model implements vLLM's `SupportsEagle3` interface (auxiliary hidden states at low/mid/high layers), and a **1-layer EAGLE-3 draft head trained against it** ([vLLM Speculators](https://docs.vllm.ai/projects/speculators/)) gives a lossless single-stream speedup:
+
+| config | decode tok/s (L40S) | vs. no-spec | mean accept length |
+|---|---|---|---|
+| no-spec baseline | 70.1 | 1.00× | — |
+| **eagle3, `num_speculative_tokens:2`** | **~82** | **~1.17×** | 1.61 |
+
+```bash
+vllm serve <K2-GPTQ-Int4> --trust-remote-code \
+  --kv-cache-dtype int4_per_token_head \
+  --speculative-config '{"method":"eagle3","model":"<draft>","num_speculative_tokens":2}'
+```
+
+**The one non-obvious knob: train the draft with a *reduced* vocabulary** (`--draft-vocab-size 32768`, mapped back via `d2t`/`t2d`). A full-vocab draft head over the 250624-token vocabulary costs almost as much per token as the 4B-active target itself and makes decoding *slower*; the 32K head is what makes speculation net-positive. Acceptance is front-loaded (≈0.44/0.17), so `num_speculative_tokens:2` beats 1 and 3. Acceptance — and the speedup — is markedly higher on structured/agentic workloads than on the general-chat prompts benchmarked here. (The dense K2-Horizon siblings share the vocab but are too large to be efficient drafts; there is no shipped MTP head.)
 
 ## License & credit
 
