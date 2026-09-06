@@ -25,13 +25,29 @@ from vllm.reasoning.basic_parsers import BaseThinkingReasoningParser
 
 @ReasoningParserManager.register_module("ifm")
 class IFMReasoningParser(BaseThinkingReasoningParser):
+    # K2-Horizon has three reasoning-effort tiers, each with its own think tokens.
+    # The tier is selected per request via chat_template_kwargs["reasoning_effort"]
+    # (high | medium | low); default high, matching the chat template.
+    _EFFORT_TOKENS = {
+        "high": ("<ifm|think>", "</ifm|think>"),
+        "medium": ("<ifm|think_fast>", "</ifm|think_fast>"),
+        "low": ("<ifm|think_faster>", "</ifm|think_faster>"),
+    }
+
+    def __init__(self, tokenizer, *args, **kwargs):
+        effort = (kwargs.get("chat_template_kwargs") or {}).get("reasoning_effort", "high")
+        if not isinstance(effort, str) or effort not in self._EFFORT_TOKENS:
+            effort = "high"
+        self._start_token, self._end_token = self._EFFORT_TOKENS[effort]
+        super().__init__(tokenizer, *args, **kwargs)
+
     @property
     def start_token(self) -> str:
-        return "<ifm|think>"
+        return self._start_token
 
     @property
     def end_token(self) -> str:
-        return "</ifm|think>"
+        return self._end_token
 
 
 # ---------------- tool parser ----------------

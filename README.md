@@ -50,7 +50,7 @@ For maximum single-stream throughput at the cost of context, use `VLLM_ATTENTION
 
 K2-Horizon emits reasoning inside `<ifm|think>…</ifm|think>` and tool calls in a nested `<ifm|tool_call>…` structure (every marker is a single token id). vLLM's stock parsers don't match this, so the plugin ships two — registered through the same `vllm.general_plugins` entry point so they load in **every** process, the API server *and* the engine core (registering only via `--tool-parser-plugin` misses the engine core):
 
-- **`IFMReasoningParser`** (`--reasoning-parser ifm`) — surfaces the think channel as `reasoning`, streaming and non-streaming.
+- **`IFMReasoningParser`** (`--reasoning-parser ifm`) — surfaces the think channel as `reasoning`, streaming and non-streaming. Handles all three reasoning-effort tiers (`<ifm|think>` / `<ifm|think_fast>` / `<ifm|think_faster>`), selected per request via `chat_template_kwargs={"reasoning_effort": "high"|"medium"|"low"}`.
 - **`IFMToolParser`** (`--tool-call-parser ifm`) — parses both the XML tool-call format and the `{"name":…,"arguments":…}` JSON variant into standard `tool_calls`.
 
 ```bash
