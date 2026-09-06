@@ -46,6 +46,25 @@ vllm serve Siladrim/K2-Horizon-MoVA-36B-A4B-GPTQ-Int4 \
 ```
 For maximum single-stream throughput at the cost of context, use `VLLM_ATTENTION_BACKEND=FLASH_ATTN --kv-cache-dtype fp8` instead.
 
+## Reasoning & tool calling (OpenAI-compatible)
+
+K2-Horizon emits reasoning inside `<ifm|think>…</ifm|think>` and tool calls in a nested `<ifm|tool_call>…` structure (every marker is a single token id). vLLM's stock parsers don't match this, so the plugin ships two — registered through the same `vllm.general_plugins` entry point so they load in **every** process, the API server *and* the engine core (registering only via `--tool-parser-plugin` misses the engine core):
+
+- **`IFMReasoningParser`** (`--reasoning-parser ifm`) — surfaces the think channel as `reasoning`, streaming and non-streaming.
+- **`IFMToolParser`** (`--tool-call-parser ifm`) — parses both the XML tool-call format and the `{"name":…,"arguments":…}` JSON variant into standard `tool_calls`.
+
+```bash
+vllm serve <K2-GPTQ-Int4> --trust-remote-code \
+  --kv-cache-dtype int4_per_token_head \
+  --enable-auto-tool-choice --tool-call-parser ifm --reasoning-parser ifm
+```
+
+> vLLM 0.28 renamed the response field `reasoning_content` → `reasoning`. If you front this with an older client or a gateway that still reads `reasoning_content`, mirror both fields (a one-line `@computed_field` on `ChatMessage`/`DeltaMessage` that returns `reasoning`).
+
+### Tuning
+
+Throughput is sensitive to the chunked-prefill size. On the L40S the optimum is `--max-num-batched-tokens 2048` (a broad 1024–4096 plateau; **512 is ~30 % slower** here — the "512 is best" rule some models follow does *not* hold, so measure per model/HW). `--enable-prefix-caching` helps whenever requests share a system prompt (agents); the cache hit-rate tracks prefix reuse, not chunk size.
+
 ## Performance (NVIDIA L40S, 48 GB, GPTQ Int4)
 
 | | value |
@@ -73,6 +92,10 @@ vllm serve <K2-GPTQ-Int4> --trust-remote-code \
 ```
 
 **The one non-obvious knob: train the draft with a *reduced* vocabulary** (`--draft-vocab-size 32768`, mapped back via `d2t`/`t2d`). A full-vocab draft head over the 250624-token vocabulary costs almost as much per token as the 4B-active target itself and makes decoding *slower*; the 32K head is what makes speculation net-positive. Acceptance is front-loaded (≈0.44/0.17), so `num_speculative_tokens:2` beats 1 and 3. Acceptance — and the speedup — is markedly higher on structured/agentic workloads than on the general-chat prompts benchmarked here. (The dense K2-Horizon siblings share the vocab but are too large to be efficient drafts; there is no shipped MTP head.)
+
+### Why the speedup caps around 1.2× (the model is compute-bound)
+
+Worth stating plainly: on Ada the Int4 GEMMs are already Marlin-optimal and K2's decode is **compute-bound**, not memory-bound. Each speculative step verifies K extra tokens ≈ K× the MoE compute, with no weight-bandwidth savings to amortize — so EAGLE-3 plateaus near ~1.2× (vs. the 2–3× typical of memory-bound models), and **suffix decoding (arctic-inference) is net-negative at every `num_speculative_tokens`** (measured −42 % at 1, and −60…−85 % at 8, even on highly repetitive production traffic). If you need faster single-stream on this model, the lever is more compute — tensor/expert-parallel across GPUs, or FP8 on Hopper — not more speculation.
 
 ## License & credit
 
