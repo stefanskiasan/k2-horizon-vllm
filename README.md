@@ -59,7 +59,7 @@ For maximum single-stream throughput at the cost of context, use `VLLM_ATTENTION
 
 ## EAGLE-3 speculative decoding (working, lossless)
 
-The model implements vLLM's `SupportsEagle3` interface (auxiliary hidden states at low/mid/high layers), and a **1-layer EAGLE-3 draft head trained against it** ([vLLM Speculators](https://docs.vllm.ai/projects/speculators/)) gives a lossless single-stream speedup:
+The model implements vLLM's `SupportsEagle3` interface (auxiliary hidden states at low/mid/high layers), and a **1-layer EAGLE-3 draft head trained against it** ([vLLM Speculators](https://docs.vllm.ai/projects/speculators/)) gives a lossless single-stream speedup. A trained draft is published at **[Siladrim/K2-Horizon-MoVA-36B-A4B-EAGLE3](https://huggingface.co/Siladrim/K2-Horizon-MoVA-36B-A4B-EAGLE3)**:
 
 | config | decode tok/s (L40S) | vs. no-spec | mean accept length |
 |---|---|---|---|
