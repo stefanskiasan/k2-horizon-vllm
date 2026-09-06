@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "k2-horizon-vllm"
+version = "0.1.0"
+description = "Native vLLM model implementation for IFM K2-Horizon-MoVA (MoVA attention + sigmoid-router MoE)."
+requires-python = ">=3.10"
+
+[project.entry-points."vllm.general_plugins"]
+k2_horizon = "k2_horizon_vllm:register"
+
+[tool.setuptools]
+packages = ["k2_horizon_vllm"]
