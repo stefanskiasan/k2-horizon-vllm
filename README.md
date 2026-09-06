@@ -55,7 +55,7 @@ For maximum single-stream throughput at the cost of context, use `VLLM_ATTENTION
 | Decode, 8 / 16 / 32 concurrent | ~300 / 530 / 1020 tok/s aggregate |
 | KV context (int4 KV + 4-bit value) | ~314K tokens |
 
-Speculative decoding with a dense K2-Horizon sibling (3.7B, same vocabulary) as the draft pushes single-stream higher.
+(Note: a dense K2-Horizon sibling as a draft-model is measured to be *too large* to help — its forward cost is comparable to the 4B-active target. EAGLE-3, below, is the practical route to faster single-stream.)
 
 ## EAGLE-3 support
 
