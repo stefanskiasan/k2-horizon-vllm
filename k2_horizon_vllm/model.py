@@ -8,6 +8,7 @@ one shared expert. Layers in `mlp_only_layers` are dense (standard v_proj + dens
 LayerNorms are GROUPED RMSNorm (layernorm_num_groups). Attention has a softplus output gate.
 """
 import math
+import os
 from collections.abc import Iterable
 
 import torch
@@ -212,9 +213,13 @@ class K2HorizonMoVAAttention(K2HorizonAttentionBase):
         # All routed value experts fused into ONE quantized (4-bit Marlin) projection:
         # hidden -> [E * kv_dim]. Keeps experts 4-bit (~4 GB, not 15 GB BF16) AND computes
         # all experts in a single Marlin GEMM (cudagraph-safe, bandwidth-cheap).
+        # IFM's own quantized checkpoints leave MoVA in full precision, so a correct
+        # checkpoint has no Marlin qweight here. K2_MOVA_BF16=1 keeps this layer bf16.
+        self._mova_bf16 = os.environ.get("K2_MOVA_BF16", "0") == "1"
         self.v_experts_fused = MergedColumnParallelLinear(
             config.hidden_size, [self.kv_dim] * config.mova_num_experts, bias=False,
-            quant_config=quant_config, prefix=f"{prefix}.v_experts_fused")
+            quant_config=None if self._mova_bf16 else quant_config,
+            prefix=f"{prefix}.v_experts_fused")
         self._vq = None  # lazy-built per-expert Marlin MoE weights (see _setup_sparse)
 
     def _mova_value(self, hidden_states):
@@ -233,6 +238,17 @@ class K2HorizonMoVAAttention(K2HorizonAttentionBase):
         if self.router_scaling_factor is not None:
             weights = weights * self.router_scaling_factor
         weights = weights.to(hidden_states.dtype)
+
+        if getattr(self, "_mova_bf16", False):
+            # Dense bf16: compute all experts, then gather the selected top-k.
+            T = hidden_states.shape[0]
+            E, N = self.mova_num_experts, self.kv_dim
+            allv = F.linear(hidden_states, self.v_experts_fused.weight)   # [T, E*N]
+            allv = F.silu(allv).view(T, E, N)
+            idx = selected.unsqueeze(-1).expand(-1, -1, N)                # [T, tk, N]
+            sel_v = torch.gather(allv, 1, idx)                            # [T, tk, N]
+            v = (sel_v * weights.unsqueeze(-1)).sum(dim=1)                # [T, N]
+            return v.to(hidden_states.dtype)
 
         # SPARSE 4-bit Marlin MoE over only the top-k value experts. Reuses the fused
         # Marlin weights (reshaped to per-expert MoE layout). Reads top-4/64 -> fast.
