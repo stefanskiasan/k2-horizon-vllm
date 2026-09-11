@@ -19,6 +19,29 @@ vLLM has no native `k2_horizon` architecture, and its **Transformers backend fai
 
 The MoVA value experts are **single-projection** (`silu(W_e · x)`, hidden→kv_dim) — they don't fit vLLM's `FusedMoE` (which needs gate/up/down) and torch's fp8 grouped-GEMM isn't available on Ada. So the experts are loaded fused into one `MergedColumnParallelLinear`, and at first forward its **Marlin weights are reshaped into per-expert MoE layout** (`[K//16, E·N·2] → [E, K//16, N·2]`, expert columns are contiguous because `kv_dim` is a multiple of the Marlin N-tile) and fed to `moe_wna16_marlin_gemm` with `moe_align_block_size`. This reuses vLLM's tested 4-bit MoE kernel for a topology it wasn't built for, and reads only the top-k experts per token.
 
+## BF16 MoVA (`K2_MOVA_BF16=1`) — for checkpoints that leave MoVA unquantized
+
+The sparse value-expert path above reads `self.v_experts_fused.qweight`, so it requires the
+MoVA value experts to be 4-bit. Not every quantized checkpoint does that — **IFM's own FP8
+release deliberately does not**: its `ignored_layers` leave all 64 `self_attn.v_experts.*`
+per layer *and* `self_attn.v_router` in full precision, quantizing only `mlp.experts.*`.
+Such a checkpoint fails to load with
+`AttributeError: 'MergedColumnParallelLinear' object has no attribute 'qweight'`.
+
+Set `K2_MOVA_BF16=1` to build `v_experts_fused` unquantized and take a dense BF16 path:
+compute all experts, SiLU, then gather the top-k and combine with the same router weights.
+That is mathematically identical to the sparse path (SiLU is elementwise per expert).
+
+It costs throughput — all `mova_num_experts` are evaluated instead of `top_k` — but the
+projection is small (`E*kv_dim = 65536`, `hidden = 2560` on the 36B): ~0.13 GB of activations
+per 1000 tokens. Measured on one CMP 170HX (GA100, sm_80), single-stream decode 72.8 -> 42.5
+tok/s, while aggregate still reaches 874.7 tok/s at 32 concurrent.
+
+This matters for correctness, not just compatibility: a GPTQ Int4 of this model that *does*
+quantize MoVA measured **HumanEval 15.2%** on our hardware, emitting `'))))'` where `'))'` was
+correct (an INT4 `v_router` selects slightly wrong value experts). The same model quantized
+the way IFM does it, served through this path, measures **92.1%**.
+
 ## 4-bit KV cache on Ada (no Blackwell needed)
 
 NVFP4 KV cache in vLLM is Blackwell-only (trtllm-gen). But vLLM also has **`int4_per_token_head`** KV — a Triton kernel that runs on **Ada (sm_89)** — which roughly doubles context vs fp8. Combined with the 4-bit value experts this reaches **~314K context on a single 48 GB card**.
